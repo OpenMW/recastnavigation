@@ -3,10 +3,12 @@ include_directories(../Recast/Include)
 
 add_executable(Tests
 	Detour/Tests_Detour.cpp
+	Recast/Bench_RecastHotPaths.cpp
 	Recast/Bench_rcVector.cpp
 	Recast/Tests_Alloc.cpp
 	Recast/Tests_Recast.cpp
 	Recast/Tests_RecastFilter.cpp
+	Recast/Tests_RecastRasterization.cpp
 	DetourCrowd/Tests_DetourPathCorridor.cpp
 )
 
