@@ -24,8 +24,12 @@ workspace "recastnavigation"
 	exceptionhandling "Off"
 	rtti "Off"
 	symbols "On"
-	flags { "FatalCompileWarnings" }
+	fatalwarnings { "All" }
 	cppdialect "C++98"
+
+	-- Xcode never treated warnings as errors here; keep it that way.
+	filter "action:xcode4"
+		removefatalwarnings { "All" }
 
 	-- debug configs
 	filter "configurations:Debug"
