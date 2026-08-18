@@ -7,6 +7,7 @@ add_executable(Tests
 	Recast/Tests_Alloc.cpp
 	Recast/Tests_Recast.cpp
 	Recast/Tests_RecastFilter.cpp
+	Recast/Tests_RecastRasterization.cpp
 	DetourCrowd/Tests_DetourPathCorridor.cpp
 )
 
