@@ -17,6 +17,7 @@
 //
 
 #include "Recast.h"
+#include "RecastAlloc.h"
 #include "RecastAssert.h"
 
 #include <stdlib.h>
@@ -24,6 +25,11 @@
 namespace
 {
 	const int MAX_HEIGHTFIELD_HEIGHT = 0xffff; // TODO (graham): Move this to a more visible constant and update usages.
+
+	struct FilterSpan
+	{
+		rcSpan* source;
+	};
 }
 
 void rcFilterLowHangingWalkableObstacles(rcContext* context, const int walkableClimb, rcHeightfield& heightfield)
@@ -72,22 +78,71 @@ void rcFilterLedgeSpans(rcContext* context, const int walkableHeight, const int 
 
 	const int xSize = heightfield.width;
 	const int zSize = heightfield.height;
+	const int columnCount = xSize * zSize;
+
+	// Index linked-list spans once for repeated neighbor-column scans.
+	rcTempVector<int> columnOffsets(columnCount + 1, 0);
+	int spanCount = 0;
+	for (int columnIndex = 0; columnIndex < columnCount; ++columnIndex)
+	{
+		columnOffsets[columnIndex] = spanCount;
+		for (const rcSpan* span = heightfield.spans[columnIndex]; span != NULL; span = span->next)
+		{
+			++spanCount;
+		}
+	}
+	columnOffsets[columnCount] = spanCount;
+
+	rcTempVector<FilterSpan> spans(spanCount);
+	int spanIndex = 0;
+	for (int columnIndex = 0; columnIndex < columnCount; ++columnIndex)
+	{
+		for (rcSpan* span = heightfield.spans[columnIndex]; span != NULL; span = span->next)
+		{
+			FilterSpan& filterSpan = spans[spanIndex++];
+			filterSpan.source = span;
+		}
+	}
 
 	// Mark spans that are adjacent to a ledge as unwalkable..
 	for (int z = 0; z < zSize; ++z)
 	{
 		for (int x = 0; x < xSize; ++x)
 		{
-			for (rcSpan* span = heightfield.spans[x + z * xSize]; span; span = span->next)
+			const int columnIndex = x + z * xSize;
+			const int columnEnd = columnOffsets[columnIndex + 1];
+			int neighborColumnStarts[4];
+			int neighborColumnEnds[4];
+			int firstHigherNeighborCeilings[4];
+			for (int direction = 0; direction < 4; ++direction)
 			{
+				const int neighborX = x + rcGetDirOffsetX(direction);
+				const int neighborZ = z + rcGetDirOffsetY(direction);
+				if (neighborX < 0 || neighborZ < 0 || neighborX >= xSize || neighborZ >= zSize)
+				{
+					neighborColumnStarts[direction] = -1;
+					neighborColumnEnds[direction] = -1;
+					firstHigherNeighborCeilings[direction] = -1;
+					continue;
+				}
+
+				const int neighborColumnIndex = neighborX + neighborZ * xSize;
+				neighborColumnStarts[direction] = columnOffsets[neighborColumnIndex];
+				neighborColumnEnds[direction] = columnOffsets[neighborColumnIndex + 1];
+				firstHigherNeighborCeilings[direction] = neighborColumnStarts[direction] + 1;
+			}
+			for (int currentSpanIndex = columnOffsets[columnIndex]; currentSpanIndex < columnEnd; ++currentSpanIndex)
+			{
+				FilterSpan& span = spans[currentSpanIndex];
 				// Skip non-walkable spans.
-				if (span->area == RC_NULL_AREA)
+				if (span.source->area == RC_NULL_AREA)
 				{
 					continue;
 				}
 
-				const int floor = (int)(span->smax);
-				const int ceiling = span->next ? (int)(span->next->smin) : MAX_HEIGHTFIELD_HEIGHT;
+				const int floor = static_cast<int>(span.source->smax);
+				const int ceiling = currentSpanIndex + 1 < columnEnd
+					? static_cast<int>(spans[currentSpanIndex + 1].source->smin) : MAX_HEIGHTFIELD_HEIGHT;
 
 				// The difference between this walkable area and the lowest neighbor walkable area.
 				// This is the difference between the current span and all neighbor spans that have
@@ -95,26 +150,25 @@ void rcFilterLedgeSpans(rcContext* context, const int walkableHeight, const int 
 				int lowestNeighborFloorDifference = MAX_HEIGHTFIELD_HEIGHT;
 
 				// Min and max height of accessible neighbours.
-				int lowestTraversableNeighborFloor = span->smax;
-				int highestTraversableNeighborFloor = span->smax;
+				int lowestTraversableNeighborFloor = span.source->smax;
+				int highestTraversableNeighborFloor = span.source->smax;
 
 				for (int direction = 0; direction < 4; ++direction)
 				{
-					const int neighborX = x + rcGetDirOffsetX(direction);
-					const int neighborZ = z + rcGetDirOffsetY(direction);
-
 					// Skip neighbours which are out of bounds.
-					if (neighborX < 0 || neighborZ < 0 || neighborX >= xSize || neighborZ >= zSize)
+					if (neighborColumnStarts[direction] < 0)
 					{
 						lowestNeighborFloorDifference = -walkableClimb - 1;
 						break;
 					}
 
-					const rcSpan* neighborSpan = heightfield.spans[neighborX + neighborZ * xSize];
+					int neighborSpanIndex = neighborColumnStarts[direction];
+					const int neighborColumnEnd = neighborColumnEnds[direction];
 
 					// The most we can step down to the neighbor is the walkableClimb distance.
 					// Start with the area under the neighbor span
-					int neighborCeiling = neighborSpan ? (int)neighborSpan->smin : MAX_HEIGHTFIELD_HEIGHT;
+					int neighborCeiling = neighborSpanIndex < neighborColumnEnd
+						? static_cast<int>(spans[neighborSpanIndex].source->smin) : MAX_HEIGHTFIELD_HEIGHT;
 
 					// Skip neighbour if the gap between the spans is too small.
 					if (rcMin(ceiling, neighborCeiling) - floor > walkableHeight)
@@ -123,11 +177,30 @@ void rcFilterLedgeSpans(rcContext* context, const int walkableHeight, const int 
 						break;
 					}
 
-					// For each span in the neighboring column...
-					for (; neighborSpan != NULL; neighborSpan = neighborSpan->next)
+					// Advance past neighbors that cannot overlap this or any higher span.
+					const int minNeighborCeiling = floor + walkableHeight;
+					if (ceiling <= minNeighborCeiling)
 					{
-						const int neighborFloor = (int)neighborSpan->smax;
-						neighborCeiling = neighborSpan->next ? (int)neighborSpan->next->smin : MAX_HEIGHTFIELD_HEIGHT;
+						continue;
+					}
+					int& firstHigherCeiling = firstHigherNeighborCeilings[direction];
+					while (firstHigherCeiling < neighborColumnEnd
+						&& static_cast<int>(spans[firstHigherCeiling].source->smin) <= minNeighborCeiling)
+					{
+						++firstHigherCeiling;
+					}
+					neighborSpanIndex = firstHigherCeiling - 1;
+
+					// For each span in the neighboring column...
+					for (; neighborSpanIndex < neighborColumnEnd; ++neighborSpanIndex)
+					{
+						const int neighborFloor = static_cast<int>(spans[neighborSpanIndex].source->smax);
+						if (neighborFloor + walkableHeight >= ceiling)
+						{
+							break;
+						}
+						neighborCeiling = neighborSpanIndex + 1 < neighborColumnEnd
+							? static_cast<int>(spans[neighborSpanIndex + 1].source->smin) : MAX_HEIGHTFIELD_HEIGHT;
 
 						// Only consider neighboring areas that have enough overlap to be potentially traversable.
 						if (rcMin(ceiling, neighborCeiling) - rcMax(floor, neighborFloor) <= walkableHeight)
@@ -161,12 +234,12 @@ void rcFilterLedgeSpans(rcContext* context, const int walkableHeight, const int 
 				// the magnitude of the delta)
 				if (lowestNeighborFloorDifference < -walkableClimb)
 				{
-					span->area = RC_NULL_AREA;
+					span.source->area = RC_NULL_AREA;
 				}
 				// If the difference between all neighbor floors is too large, this is a steep slope, so mark the span as an unwalkable ledge.
 				else if (highestTraversableNeighborFloor - lowestTraversableNeighborFloor > walkableClimb)
 				{
-					span->area = RC_NULL_AREA;
+					span.source->area = RC_NULL_AREA;
 				}
 			}
 		}
