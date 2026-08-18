@@ -143,10 +143,14 @@ jobs:
           - Release
         vs-version:
           - vs2022
+          - vs2026
         include:
           - vs-version: vs2022
             version-range: '17.0'
             runner: windows-2022
+          - vs-version: vs2026
+            version-range: '18.0'
+            runner: windows-2025
 
     runs-on: ${{matrix.runner}}
 
@@ -191,10 +195,14 @@ jobs:
           - Release
         vs-version:
           - vs2022
+          - vs2026
         include:
           - vs-version: vs2022
             cmake-generator: Visual Studio 17 2022
             runner: windows-2022
+          - vs-version: vs2026
+            cmake-generator: Visual Studio 18 2026
+            runner: windows-2025
 
     runs-on: ${{matrix.runner}}
 
