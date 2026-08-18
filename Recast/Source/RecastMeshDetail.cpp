@@ -1010,11 +1010,11 @@ static void seedArrayWithPolyCenter(rcContext* ctx, const rcCompactHeightfield& 
 		// Push the direct dir last so we start with this on next iteration
 		rcSwap(dirs[directDir], dirs[3]);
 
-		const rcCompactSpan& cs = chf.spans[ci];
 		for (int i = 0; i < 4; i++)
 		{
 			int dir = dirs[i];
-			if (rcGetCon(cs, dir) == RC_NOT_CONNECTED)
+			const int neighborSpanIndex = chf.neighbors[ci * 4 + dir];
+			if (neighborSpanIndex < 0)
 				continue;
 
 			int newX = cx + rcGetDirOffsetX(dir);
@@ -1031,7 +1031,7 @@ static void seedArrayWithPolyCenter(rcContext* ctx, const rcCompactHeightfield& 
 			hp.data[hpx+hpy*hp.width] = 1;
 			array.push_back(newX);
 			array.push_back(newY);
-			array.push_back((int)chf.cells[(newX+bs)+(newY+bs)*chf.width].index + rcGetCon(cs, dir));
+			array.push_back(neighborSpanIndex);
 		}
 
 		rcSwap(dirs[directDir], dirs[3]);
@@ -1100,11 +1100,9 @@ static void getHeightData(rcContext* ctx, const rcCompactHeightfield& chf,
 						bool border = false;
 						for (int dir = 0; dir < 4; ++dir)
 						{
-							if (rcGetCon(s, dir) != RC_NOT_CONNECTED)
+							const int ai = chf.neighbors[i * 4 + dir];
+							if (ai >= 0)
 							{
-								const int ax = x + rcGetDirOffsetX(dir);
-								const int ay = y + rcGetDirOffsetY(dir);
-								const int ai = (int)chf.cells[ax + ay*chf.width].index + rcGetCon(s, dir);
 								const rcCompactSpan& as = chf.spans[ai];
 								if (as.reg != region)
 								{
@@ -1148,10 +1146,10 @@ static void getHeightData(rcContext* ctx, const rcCompactHeightfield& chf,
 			queue.resize(queue.size()-RETRACT_SIZE*3);
 		}
 		
-		const rcCompactSpan& cs = chf.spans[ci];
 		for (int dir = 0; dir < 4; ++dir)
 		{
-			if (rcGetCon(cs, dir) == RC_NOT_CONNECTED) continue;
+			const int ai = chf.neighbors[ci * 4 + dir];
+			if (ai < 0) continue;
 			
 			const int ax = cx + rcGetDirOffsetX(dir);
 			const int ay = cy + rcGetDirOffsetY(dir);
@@ -1164,7 +1162,6 @@ static void getHeightData(rcContext* ctx, const rcCompactHeightfield& chf,
 			if (hp.data[hx + hy*hp.width] != RC_UNSET_HEIGHT)
 				continue;
 			
-			const int ai = (int)chf.cells[ax + ay*chf.width].index + rcGetCon(cs, dir);
 			const rcCompactSpan& as = chf.spans[ai];
 			
 			hp.data[hx + hy*hp.width] = as.y;

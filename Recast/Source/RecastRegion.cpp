@@ -29,159 +29,69 @@ namespace
 {
 struct LevelStackEntry
 {
-	LevelStackEntry(int x_, int y_, int index_) : x(x_), y(y_), index(index_) {}
-	int x;
-	int y;
+	explicit LevelStackEntry(int index_) : index(index_) {}
 	int index;
 };
 }  // namespace
 
+static void updateDistanceField(
+	unsigned short* distanceField, const int spanIndex, const int neighborSpanIndex, const int distance)
+{
+	if (neighborSpanIndex >= 0 && (int)distanceField[neighborSpanIndex] + distance < distanceField[spanIndex])
+	{
+		distanceField[spanIndex] = (unsigned short)(distanceField[neighborSpanIndex] + distance);
+	}
+}
+
 static void calculateDistanceField(rcCompactHeightfield& chf, unsigned short* src, unsigned short& maxDist)
 {
-	const int w = chf.width;
-	const int h = chf.height;
-	
 	// Init distance and points.
 	for (int i = 0; i < chf.spanCount; ++i)
 		src[i] = 0xffff;
 	
 	// Mark boundary cells.
-	for (int y = 0; y < h; ++y)
+	for (int i = 0; i < chf.spanCount; ++i)
 	{
-		for (int x = 0; x < w; ++x)
+		const unsigned char area = chf.areas[i];
+		int nc = 0;
+		for (int dir = 0; dir < 4; ++dir)
 		{
-			const rcCompactCell& c = chf.cells[x+y*w];
-			for (int i = (int)c.index, ni = (int)(c.index+c.count); i < ni; ++i)
+			const int ai = chf.neighbors[i * 4 + dir];
+			if (ai >= 0 && area == chf.areas[ai])
 			{
-				const rcCompactSpan& s = chf.spans[i];
-				const unsigned char area = chf.areas[i];
-				
-				int nc = 0;
-				for (int dir = 0; dir < 4; ++dir)
-				{
-					if (rcGetCon(s, dir) != RC_NOT_CONNECTED)
-					{
-						const int ax = x + rcGetDirOffsetX(dir);
-						const int ay = y + rcGetDirOffsetY(dir);
-						const int ai = (int)chf.cells[ax+ay*w].index + rcGetCon(s, dir);
-						if (area == chf.areas[ai])
-							nc++;
-					}
-				}
-				if (nc != 4)
-					src[i] = 0;
+				++nc;
 			}
 		}
+		if (nc != 4)
+			src[i] = 0;
 	}
 	
 			
 	// Pass 1
-	for (int y = 0; y < h; ++y)
+	for (int i = 0; i < chf.spanCount; ++i)
 	{
-		for (int x = 0; x < w; ++x)
-		{
-			const rcCompactCell& c = chf.cells[x+y*w];
-			for (int i = (int)c.index, ni = (int)(c.index+c.count); i < ni; ++i)
-			{
-				const rcCompactSpan& s = chf.spans[i];
-				
-				if (rcGetCon(s, 0) != RC_NOT_CONNECTED)
-				{
-					// (-1,0)
-					const int ax = x + rcGetDirOffsetX(0);
-					const int ay = y + rcGetDirOffsetY(0);
-					const int ai = (int)chf.cells[ax+ay*w].index + rcGetCon(s, 0);
-					const rcCompactSpan& as = chf.spans[ai];
-					if (src[ai]+2 < src[i])
-						src[i] = src[ai]+2;
-					
-					// (-1,-1)
-					if (rcGetCon(as, 3) != RC_NOT_CONNECTED)
-					{
-						const int aax = ax + rcGetDirOffsetX(3);
-						const int aay = ay + rcGetDirOffsetY(3);
-						const int aai = (int)chf.cells[aax+aay*w].index + rcGetCon(as, 3);
-						if (src[aai]+3 < src[i])
-							src[i] = src[aai]+3;
-					}
-				}
-				if (rcGetCon(s, 3) != RC_NOT_CONNECTED)
-				{
-					// (0,-1)
-					const int ax = x + rcGetDirOffsetX(3);
-					const int ay = y + rcGetDirOffsetY(3);
-					const int ai = (int)chf.cells[ax+ay*w].index + rcGetCon(s, 3);
-					const rcCompactSpan& as = chf.spans[ai];
-					if (src[ai]+2 < src[i])
-						src[i] = src[ai]+2;
-					
-					// (1,-1)
-					if (rcGetCon(as, 2) != RC_NOT_CONNECTED)
-					{
-						const int aax = ax + rcGetDirOffsetX(2);
-						const int aay = ay + rcGetDirOffsetY(2);
-						const int aai = (int)chf.cells[aax+aay*w].index + rcGetCon(as, 2);
-						if (src[aai]+3 < src[i])
-							src[i] = src[aai]+3;
-					}
-				}
-			}
-		}
+		const int west = chf.neighbors[i * 4];
+		updateDistanceField(src, i, west, 2);
+		if (west >= 0)
+			updateDistanceField(src, i, chf.neighbors[west * 4 + 3], 3);
+		const int north = chf.neighbors[i * 4 + 3];
+		updateDistanceField(src, i, north, 2);
+		if (north >= 0)
+			updateDistanceField(src, i, chf.neighbors[north * 4 + 2], 3);
 	}
 	
 	// Pass 2
-	for (int y = h-1; y >= 0; --y)
+	for (int i = chf.spanCount - 1; i >= 0; --i)
 	{
-		for (int x = w-1; x >= 0; --x)
-		{
-			const rcCompactCell& c = chf.cells[x+y*w];
-			for (int i = (int)c.index, ni = (int)(c.index+c.count); i < ni; ++i)
-			{
-				const rcCompactSpan& s = chf.spans[i];
-				
-				if (rcGetCon(s, 2) != RC_NOT_CONNECTED)
-				{
-					// (1,0)
-					const int ax = x + rcGetDirOffsetX(2);
-					const int ay = y + rcGetDirOffsetY(2);
-					const int ai = (int)chf.cells[ax+ay*w].index + rcGetCon(s, 2);
-					const rcCompactSpan& as = chf.spans[ai];
-					if (src[ai]+2 < src[i])
-						src[i] = src[ai]+2;
-					
-					// (1,1)
-					if (rcGetCon(as, 1) != RC_NOT_CONNECTED)
-					{
-						const int aax = ax + rcGetDirOffsetX(1);
-						const int aay = ay + rcGetDirOffsetY(1);
-						const int aai = (int)chf.cells[aax+aay*w].index + rcGetCon(as, 1);
-						if (src[aai]+3 < src[i])
-							src[i] = src[aai]+3;
-					}
-				}
-				if (rcGetCon(s, 1) != RC_NOT_CONNECTED)
-				{
-					// (0,1)
-					const int ax = x + rcGetDirOffsetX(1);
-					const int ay = y + rcGetDirOffsetY(1);
-					const int ai = (int)chf.cells[ax+ay*w].index + rcGetCon(s, 1);
-					const rcCompactSpan& as = chf.spans[ai];
-					if (src[ai]+2 < src[i])
-						src[i] = src[ai]+2;
-					
-					// (-1,1)
-					if (rcGetCon(as, 0) != RC_NOT_CONNECTED)
-					{
-						const int aax = ax + rcGetDirOffsetX(0);
-						const int aay = ay + rcGetDirOffsetY(0);
-						const int aai = (int)chf.cells[aax+aay*w].index + rcGetCon(as, 0);
-						if (src[aai]+3 < src[i])
-							src[i] = src[aai]+3;
-					}
-				}
-			}
-		}
-	}	
+		const int east = chf.neighbors[i * 4 + 2];
+		updateDistanceField(src, i, east, 2);
+		if (east >= 0)
+			updateDistanceField(src, i, chf.neighbors[east * 4 + 1], 3);
+		const int south = chf.neighbors[i * 4 + 1];
+		updateDistanceField(src, i, south, 2);
+		if (south >= 0)
+			updateDistanceField(src, i, chf.neighbors[south * 4], 3);
+	}
 	
 	maxDist = 0;
 	for (int i = 0; i < chf.spanCount; ++i)
@@ -190,78 +100,59 @@ static void calculateDistanceField(rcCompactHeightfield& chf, unsigned short* sr
 }
 
 static unsigned short* boxBlur(rcCompactHeightfield& chf, int thr,
-							   unsigned short* src, unsigned short* dst)
+								   unsigned short* src, unsigned short* dst)
 {
-	const int w = chf.width;
-	const int h = chf.height;
-	
 	thr *= 2;
 	
-	for (int y = 0; y < h; ++y)
+	for (int i = 0; i < chf.spanCount; ++i)
 	{
-		for (int x = 0; x < w; ++x)
+		const unsigned short cd = src[i];
+		if (cd <= thr)
 		{
-			const rcCompactCell& c = chf.cells[x+y*w];
-			for (int i = (int)c.index, ni = (int)(c.index+c.count); i < ni; ++i)
-			{
-				const rcCompactSpan& s = chf.spans[i];
-				const unsigned short cd = src[i];
-				if (cd <= thr)
-				{
-					dst[i] = cd;
-					continue;
-				}
+			dst[i] = cd;
+			continue;
+		}
 
-				int d = (int)cd;
-				for (int dir = 0; dir < 4; ++dir)
+		int d = (int)cd;
+		for (int dir = 0; dir < 4; ++dir)
+		{
+			const int ai = chf.neighbors[i * 4 + dir];
+			if (ai >= 0)
+			{
+				d += (int)src[ai];
+				const int dir2 = (dir+1) & 0x3;
+				const int ai2 = chf.neighbors[ai * 4 + dir2];
+				if (ai2 >= 0)
 				{
-					if (rcGetCon(s, dir) != RC_NOT_CONNECTED)
-					{
-						const int ax = x + rcGetDirOffsetX(dir);
-						const int ay = y + rcGetDirOffsetY(dir);
-						const int ai = (int)chf.cells[ax+ay*w].index + rcGetCon(s, dir);
-						d += (int)src[ai];
-						
-						const rcCompactSpan& as = chf.spans[ai];
-						const int dir2 = (dir+1) & 0x3;
-						if (rcGetCon(as, dir2) != RC_NOT_CONNECTED)
-						{
-							const int ax2 = ax + rcGetDirOffsetX(dir2);
-							const int ay2 = ay + rcGetDirOffsetY(dir2);
-							const int ai2 = (int)chf.cells[ax2+ay2*w].index + rcGetCon(as, dir2);
-							d += (int)src[ai2];
-						}
-						else
-						{
-							d += cd;
-						}
-					}
-					else
-					{
-						d += cd*2;
-					}
+					d += (int)src[ai2];
 				}
-				dst[i] = (unsigned short)((d+5)/9);
+				else
+				{
+					d += cd;
+				}
+			}
+			else
+			{
+				d += cd*2;
 			}
 		}
+		dst[i] = (unsigned short)((d+5)/9);
 	}
 	return dst;
 }
 
 
-static bool floodRegion(int x, int y, int i,
+static bool floodRegion(int i,
 						unsigned short level, unsigned short r,
 						rcCompactHeightfield& chf,
 						unsigned short* srcReg, unsigned short* srcDist,
 						rcTempVector<LevelStackEntry>& stack)
 {
-	const int w = chf.width;
-	
 	const unsigned char area = chf.areas[i];
 	
 	// Flood fill mark region.
 	stack.clear();
-	stack.push_back(LevelStackEntry(x, y, i));
+	stack.push_back(LevelStackEntry(i));
 	srcReg[i] = r;
 	srcDist[i] = 0;
 	
@@ -270,24 +161,17 @@ static bool floodRegion(int x, int y, int i,
 	
 	while (stack.size() > 0)
 	{
-		LevelStackEntry& back = stack.back();
-		int cx = back.x;
-		int cy = back.y;
-		int ci = back.index;
+		const int ci = stack.back().index;
 		stack.pop_back();
-		
-		const rcCompactSpan& cs = chf.spans[ci];
 		
 		// Check if any of the neighbours already have a valid region set.
 		unsigned short ar = 0;
 		for (int dir = 0; dir < 4; ++dir)
 		{
 			// 8 connected
-			if (rcGetCon(cs, dir) != RC_NOT_CONNECTED)
+			const int ai = chf.neighbors[ci * 4 + dir];
+			if (ai >= 0)
 			{
-				const int ax = cx + rcGetDirOffsetX(dir);
-				const int ay = cy + rcGetDirOffsetY(dir);
-				const int ai = (int)chf.cells[ax+ay*w].index + rcGetCon(cs, dir);
 				if (chf.areas[ai] != area)
 					continue;
 				unsigned short nr = srcReg[ai];
@@ -299,14 +183,10 @@ static bool floodRegion(int x, int y, int i,
 					break;
 				}
 				
-				const rcCompactSpan& as = chf.spans[ai];
-				
 				const int dir2 = (dir+1) & 0x3;
-				if (rcGetCon(as, dir2) != RC_NOT_CONNECTED)
+				const int ai2 = chf.neighbors[ai * 4 + dir2];
+				if (ai2 >= 0)
 				{
-					const int ax2 = ax + rcGetDirOffsetX(dir2);
-					const int ay2 = ay + rcGetDirOffsetY(dir2);
-					const int ai2 = (int)chf.cells[ax2+ay2*w].index + rcGetCon(as, dir2);
 					if (chf.areas[ai2] != area)
 						continue;
 					unsigned short nr2 = srcReg[ai2];
@@ -329,18 +209,16 @@ static bool floodRegion(int x, int y, int i,
 		// Expand neighbours.
 		for (int dir = 0; dir < 4; ++dir)
 		{
-			if (rcGetCon(cs, dir) != RC_NOT_CONNECTED)
+			const int ai = chf.neighbors[ci * 4 + dir];
+			if (ai >= 0)
 			{
-				const int ax = cx + rcGetDirOffsetX(dir);
-				const int ay = cy + rcGetDirOffsetY(dir);
-				const int ai = (int)chf.cells[ax+ay*w].index + rcGetCon(cs, dir);
 				if (chf.areas[ai] != area)
 					continue;
 				if (chf.dist[ai] >= lev && srcReg[ai] == 0)
 				{
 					srcReg[ai] = r;
 					srcDist[ai] = 0;
-					stack.push_back(LevelStackEntry(ax, ay, ai));
+					stack.push_back(LevelStackEntry(ai));
 				}
 			}
 		}
@@ -364,25 +242,15 @@ static void expandRegions(int maxIter, unsigned short level,
 					      rcTempVector<LevelStackEntry>& stack,
 					      bool fillStack)
 {
-	const int w = chf.width;
-	const int h = chf.height;
-
 	if (fillStack)
 	{
 		// Find cells revealed by the raised level.
 		stack.clear();
-		for (int y = 0; y < h; ++y)
+		for (int i = 0; i < chf.spanCount; ++i)
 		{
-			for (int x = 0; x < w; ++x)
+			if (chf.dist[i] >= level && srcReg[i] == 0 && chf.areas[i] != RC_NULL_AREA)
 			{
-				const rcCompactCell& c = chf.cells[x+y*w];
-				for (int i = (int)c.index, ni = (int)(c.index+c.count); i < ni; ++i)
-				{
-					if (chf.dist[i] >= level && srcReg[i] == 0 && chf.areas[i] != RC_NULL_AREA)
-					{
-						stack.push_back(LevelStackEntry(x, y, i));
-					}
-				}
+				stack.push_back(LevelStackEntry(i));
 			}
 		}
 	}
@@ -406,8 +274,6 @@ static void expandRegions(int maxIter, unsigned short level,
 		
 		for (int j = 0; j < stack.size(); j++)
 		{
-			int x = stack[j].x;
-			int y = stack[j].y;
 			int i = stack[j].index;
 			if (i < 0)
 			{
@@ -418,13 +284,10 @@ static void expandRegions(int maxIter, unsigned short level,
 			unsigned short r = srcReg[i];
 			unsigned short d2 = 0xffff;
 			const unsigned char area = chf.areas[i];
-			const rcCompactSpan& s = chf.spans[i];
 			for (int dir = 0; dir < 4; ++dir)
 			{
-				if (rcGetCon(s, dir) == RC_NOT_CONNECTED) continue;
-				const int ax = x + rcGetDirOffsetX(dir);
-				const int ay = y + rcGetDirOffsetY(dir);
-				const int ai = (int)chf.cells[ax+ay*w].index + rcGetCon(s, dir);
+				const int ai = chf.neighbors[i * 4 + dir];
+				if (ai < 0) continue;
 				if (chf.areas[ai] != area) continue;
 				if (srcReg[ai] > 0 && (srcReg[ai] & RC_BORDER_REG) == 0)
 				{
@@ -468,39 +331,32 @@ static void expandRegions(int maxIter, unsigned short level,
 
 
 static void sortCellsByLevel(unsigned short startLevel,
-							  rcCompactHeightfield& chf,
-							  const unsigned short* srcReg,
-							  unsigned int nbStacks, rcTempVector<LevelStackEntry>* stacks,
-							  unsigned short loglevelsPerStack) // the levels per stack (2 in our case) as a bit shift
+								  rcCompactHeightfield& chf,
+								  const unsigned short* srcReg,
+								  const rcTempVector<int>& walkableSpans,
+								  unsigned int nbStacks, rcTempVector<LevelStackEntry>* stacks,
+								  unsigned short loglevelsPerStack) // the levels per stack (2 in our case) as a bit shift
 {
-	const int w = chf.width;
-	const int h = chf.height;
 	startLevel = startLevel >> loglevelsPerStack;
 
 	for (unsigned int j=0; j<nbStacks; ++j)
 		stacks[j].clear();
 
 	// put all cells in the level range into the appropriate stacks
-	for (int y = 0; y < h; ++y)
+	for (int j = 0; j < walkableSpans.size(); ++j)
 	{
-		for (int x = 0; x < w; ++x)
-		{
-			const rcCompactCell& c = chf.cells[x+y*w];
-			for (int i = (int)c.index, ni = (int)(c.index+c.count); i < ni; ++i)
-			{
-				if (chf.areas[i] == RC_NULL_AREA || srcReg[i] != 0)
-					continue;
+		const int i = walkableSpans[j];
+		if (srcReg[i] != 0)
+			continue;
 
-				int level = chf.dist[i] >> loglevelsPerStack;
-				int sId = startLevel - level;
-				if (sId >= (int)nbStacks)
-					continue;
-				if (sId < 0)
-					sId = 0;
+		int level = chf.dist[i] >> loglevelsPerStack;
+		int sId = startLevel - level;
+		if (sId >= (int)nbStacks)
+			continue;
+		if (sId < 0)
+			sId = 0;
 
-				stacks[sId].push_back(LevelStackEntry(x, y, i));
-			}
-		}
+		stacks[sId].push_back(LevelStackEntry(i));
 	}
 }
 
@@ -1564,6 +1420,15 @@ bool rcBuildRegions(rcContext* ctx, rcCompactHeightfield& chf,
 	
 	memset(srcReg, 0, sizeof(unsigned short)*chf.spanCount);
 	memset(srcDist, 0, sizeof(unsigned short)*chf.spanCount);
+	rcTempVector<int> walkableSpans;
+	walkableSpans.reserve(chf.spanCount);
+	for (int i = 0; i < chf.spanCount; ++i)
+	{
+		if (chf.areas[i] != RC_NULL_AREA)
+		{
+			walkableSpans.push_back(i);
+		}
+	}
 	
 	unsigned short regionId = 1;
 	unsigned short level = (chf.maxDistance+1) & ~1;
@@ -1598,7 +1463,7 @@ bool rcBuildRegions(rcContext* ctx, rcCompactHeightfield& chf,
 //		ctx->startTimer(RC_TIMER_DIVIDE_TO_LEVELS);
 
 		if (sId == 0)
-			sortCellsByLevel(level, chf, srcReg, NB_STACKS, lvlStacks, 1);
+			sortCellsByLevel(level, chf, srcReg, walkableSpans, NB_STACKS, lvlStacks, 1);
 		else 
 			appendStacks(lvlStacks[sId-1], lvlStacks[sId], srcReg); // copy left overs from last level
 
@@ -1617,13 +1482,10 @@ bool rcBuildRegions(rcContext* ctx, rcCompactHeightfield& chf,
 			// Mark new regions with IDs.
 			for (int j = 0; j<lvlStacks[sId].size(); j++)
 			{
-				LevelStackEntry current = lvlStacks[sId][j];
-				int x = current.x;
-				int y = current.y;
-				int i = current.index;
+				const int i = lvlStacks[sId][j].index;
 				if (i >= 0 && srcReg[i] == 0)
 				{
-					if (floodRegion(x, y, i, level, regionId, chf, srcReg, srcDist, stack))
+					if (floodRegion(i, level, regionId, chf, srcReg, srcDist, stack))
 					{
 						if (regionId == 0xFFFF)
 						{

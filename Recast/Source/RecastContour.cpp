@@ -25,9 +25,9 @@
 #include "RecastAssert.h"
 
 
-static int getCornerHeight(int x, int y, int i, int dir,
-						   const rcCompactHeightfield& chf,
-						   bool& isBorderVertex)
+static int getCornerHeight(int i, int dir,
+							   const rcCompactHeightfield& chf,
+							   bool& isBorderVertex)
 {
 	const rcCompactSpan& s = chf.spans[i];
 	int ch = (int)s.y;
@@ -39,37 +39,29 @@ static int getCornerHeight(int x, int y, int i, int dir,
 	// border vertices which are in between two areas to be removed.
 	regs[0] = chf.spans[i].reg | (chf.areas[i] << 16);
 	
-	if (rcGetCon(s, dir) != RC_NOT_CONNECTED)
+	const int ai = chf.neighbors[i * 4 + dir];
+	if (ai >= 0)
 	{
-		const int ax = x + rcGetDirOffsetX(dir);
-		const int ay = y + rcGetDirOffsetY(dir);
-		const int ai = (int)chf.cells[ax+ay*chf.width].index + rcGetCon(s, dir);
 		const rcCompactSpan& as = chf.spans[ai];
 		ch = rcMax(ch, (int)as.y);
 		regs[1] = chf.spans[ai].reg | (chf.areas[ai] << 16);
-		if (rcGetCon(as, dirp) != RC_NOT_CONNECTED)
+		const int ai2 = chf.neighbors[ai * 4 + dirp];
+		if (ai2 >= 0)
 		{
-			const int ax2 = ax + rcGetDirOffsetX(dirp);
-			const int ay2 = ay + rcGetDirOffsetY(dirp);
-			const int ai2 = (int)chf.cells[ax2+ay2*chf.width].index + rcGetCon(as, dirp);
 			const rcCompactSpan& as2 = chf.spans[ai2];
 			ch = rcMax(ch, (int)as2.y);
 			regs[2] = chf.spans[ai2].reg | (chf.areas[ai2] << 16);
 		}
 	}
-	if (rcGetCon(s, dirp) != RC_NOT_CONNECTED)
+	const int aip = chf.neighbors[i * 4 + dirp];
+	if (aip >= 0)
 	{
-		const int ax = x + rcGetDirOffsetX(dirp);
-		const int ay = y + rcGetDirOffsetY(dirp);
-		const int ai = (int)chf.cells[ax+ay*chf.width].index + rcGetCon(s, dirp);
-		const rcCompactSpan& as = chf.spans[ai];
+		const rcCompactSpan& as = chf.spans[aip];
 		ch = rcMax(ch, (int)as.y);
-		regs[3] = chf.spans[ai].reg | (chf.areas[ai] << 16);
-		if (rcGetCon(as, dir) != RC_NOT_CONNECTED)
+		regs[3] = chf.spans[aip].reg | (chf.areas[aip] << 16);
+		const int ai2 = chf.neighbors[aip * 4 + dir];
+		if (ai2 >= 0)
 		{
-			const int ax2 = ax + rcGetDirOffsetX(dir);
-			const int ay2 = ay + rcGetDirOffsetY(dir);
-			const int ai2 = (int)chf.cells[ax2+ay2*chf.width].index + rcGetCon(as, dir);
 			const rcCompactSpan& as2 = chf.spans[ai2];
 			ch = rcMax(ch, (int)as2.y);
 			regs[2] = chf.spans[ai2].reg | (chf.areas[ai2] << 16);
@@ -123,7 +115,7 @@ static void walkContour(int x, int y, int i,
 			bool isBorderVertex = false;
 			bool isAreaBorder = false;
 			int px = x;
-			int py = getCornerHeight(x, y, i, dir, chf, isBorderVertex);
+			int py = getCornerHeight(i, dir, chf, isBorderVertex);
 			int pz = y;
 			switch(dir)
 			{
@@ -132,12 +124,9 @@ static void walkContour(int x, int y, int i,
 				case 2: px++; break;
 			}
 			int r = 0;
-			const rcCompactSpan& s = chf.spans[i];
-			if (rcGetCon(s, dir) != RC_NOT_CONNECTED)
+			const int ai = chf.neighbors[i * 4 + dir];
+			if (ai >= 0)
 			{
-				const int ax = x + rcGetDirOffsetX(dir);
-				const int ay = y + rcGetDirOffsetY(dir);
-				const int ai = (int)chf.cells[ax+ay*chf.width].index + rcGetCon(s, dir);
 				r = (int)chf.spans[ai].reg;
 				if (area != chf.areas[ai])
 					isAreaBorder = true;
@@ -156,15 +145,9 @@ static void walkContour(int x, int y, int i,
 		}
 		else
 		{
-			int ni = -1;
 			const int nx = x + rcGetDirOffsetX(dir);
 			const int ny = y + rcGetDirOffsetY(dir);
-			const rcCompactSpan& s = chf.spans[i];
-			if (rcGetCon(s, dir) != RC_NOT_CONNECTED)
-			{
-				const rcCompactCell& nc = chf.cells[nx+ny*chf.width];
-				ni = (int)nc.index + rcGetCon(s, dir);
-			}
+			const int ni = chf.neighbors[i * 4 + dir];
 			if (ni == -1)
 			{
 				// Should not happen.
@@ -865,7 +848,6 @@ bool rcBuildContours(rcContext* ctx, const rcCompactHeightfield& chf,
 			for (int i = (int)c.index, ni = (int)(c.index+c.count); i < ni; ++i)
 			{
 				unsigned char res = 0;
-				const rcCompactSpan& s = chf.spans[i];
 				if (!chf.spans[i].reg || (chf.spans[i].reg & RC_BORDER_REG))
 				{
 					flags[i] = 0;
@@ -874,11 +856,9 @@ bool rcBuildContours(rcContext* ctx, const rcCompactHeightfield& chf,
 				for (int dir = 0; dir < 4; ++dir)
 				{
 					unsigned short r = 0;
-					if (rcGetCon(s, dir) != RC_NOT_CONNECTED)
+					const int ai = chf.neighbors[i * 4 + dir];
+					if (ai >= 0)
 					{
-						const int ax = x + rcGetDirOffsetX(dir);
-						const int ay = y + rcGetDirOffsetY(dir);
-						const int ai = (int)chf.cells[ax+ay*w].index + rcGetCon(s, dir);
 						r = chf.spans[ai].reg;
 					}
 					if (r == chf.spans[i].reg)
