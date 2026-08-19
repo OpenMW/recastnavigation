@@ -1,5 +1,7 @@
 ﻿#include <stdio.h>
 #include <string.h>
+#include <array>
+#include <cstdint>
 #include <vector>
 
 #include "catch2/catch_all.hpp"
@@ -12,7 +14,15 @@ namespace
 	void freeHeightfieldSpans(const rcHeightfield& heightfield)
 	{
 		for (int i = 0; i < heightfield.height * heightfield.width; ++i)
-			rcFree(heightfield.spans[i]);
+		{
+			rcSpan* span = heightfield.spans[i];
+			while (span != NULL)
+			{
+				rcSpan* next = span->next;
+				rcFree(span);
+				span = next;
+			}
+		}
 	}
 
 	std::vector<unsigned> getAreas(const rcHeightfield& heightfield)
@@ -22,6 +32,106 @@ namespace
 			if (const rcSpan* const span = heightfield.spans[i])
 				result[i] = span->area;
 		return result;
+	}
+
+	using SpanValue = std::array<unsigned int, 4>;
+
+	std::vector<SpanValue> getSpans(const rcHeightfield& heightfield)
+	{
+		std::vector<SpanValue> result;
+		for (int column = 0; column < heightfield.height * heightfield.width; ++column)
+		{
+			for (const rcSpan* span = heightfield.spans[column]; span != NULL; span = span->next)
+			{
+				result.push_back(SpanValue{ (unsigned int)column, (unsigned int)span->smin,
+					(unsigned int)span->smax, (unsigned int)span->area });
+			}
+		}
+		return result;
+	}
+
+	// The linked-list implementation is an independent oracle for the indexed scan.
+	void filterLedgeSpansReference(
+		const int walkableHeight, const int walkableClimb, rcHeightfield& heightfield)
+	{
+		const int maxHeight = 0xffff;
+		for (int z = 0; z < heightfield.height; ++z)
+		{
+			for (int x = 0; x < heightfield.width; ++x)
+			{
+				for (rcSpan* span = heightfield.spans[x + z * heightfield.width]; span; span = span->next)
+				{
+					if (span->area == RC_NULL_AREA)
+						continue;
+
+					const int floor = (int)span->smax;
+					const int ceiling = span->next ? (int)span->next->smin : maxHeight;
+					int lowestNeighborFloorDifference = maxHeight;
+					int lowestTraversableNeighborFloor = span->smax;
+					int highestTraversableNeighborFloor = span->smax;
+
+					for (int direction = 0; direction < 4; ++direction)
+					{
+						const int neighborX = x + rcGetDirOffsetX(direction);
+						const int neighborZ = z + rcGetDirOffsetY(direction);
+						if (neighborX < 0 || neighborZ < 0
+							|| neighborX >= heightfield.width || neighborZ >= heightfield.height)
+						{
+							lowestNeighborFloorDifference = -walkableClimb - 1;
+							break;
+						}
+
+						const rcSpan* neighborSpan
+							= heightfield.spans[neighborX + neighborZ * heightfield.width];
+						int neighborCeiling = neighborSpan ? (int)neighborSpan->smin : maxHeight;
+						if (rcMin(ceiling, neighborCeiling) - floor > walkableHeight)
+						{
+							lowestNeighborFloorDifference = -walkableClimb - 1;
+							break;
+						}
+
+						for (; neighborSpan != NULL; neighborSpan = neighborSpan->next)
+						{
+							const int neighborFloor = (int)neighborSpan->smax;
+							neighborCeiling
+								= neighborSpan->next ? (int)neighborSpan->next->smin : maxHeight;
+							if (rcMin(ceiling, neighborCeiling) - rcMax(floor, neighborFloor)
+								<= walkableHeight)
+							{
+								continue;
+							}
+
+							const int difference = neighborFloor - floor;
+							lowestNeighborFloorDifference
+								= rcMin(lowestNeighborFloorDifference, difference);
+							if (rcAbs(difference) <= walkableClimb)
+							{
+								lowestTraversableNeighborFloor
+									= rcMin(lowestTraversableNeighborFloor, neighborFloor);
+								highestTraversableNeighborFloor
+									= rcMax(highestTraversableNeighborFloor, neighborFloor);
+							}
+							else if (difference < -walkableClimb)
+							{
+								break;
+							}
+						}
+					}
+
+					if (lowestNeighborFloorDifference < -walkableClimb
+						|| highestTraversableNeighborFloor - lowestTraversableNeighborFloor > walkableClimb)
+					{
+						span->area = RC_NULL_AREA;
+					}
+				}
+			}
+		}
+	}
+
+	std::uint32_t nextRandom(std::uint32_t& state)
+	{
+		state = state * 1664525u + 1013904223u;
+		return state;
 	}
 }
 
@@ -310,6 +420,52 @@ TEST_CASE("rcFilterLedgeSpans", "[recast, filtering]")
 		CHECK_THAT(getAreas(heightfield), Catch::Matchers::Equals(expectedAreas));
 
 		freeHeightfieldSpans(heightfield);
+	}
+}
+
+TEST_CASE("rcFilterLedgeSpans matches the reference scan for multi-span columns", "[recast, filtering]")
+{
+	const int width = 12;
+	const int height = 12;
+	const float boundsMin[3] = { 0.0f, 0.0f, 0.0f };
+	const float boundsMax[3] = { (float)width, 256.0f, (float)height };
+	rcContext context;
+
+	for (std::uint32_t seed = 1; seed <= 32; ++seed)
+	{
+		rcHeightfield reference;
+		rcHeightfield optimized;
+		CAPTURE(seed);
+		REQUIRE(rcCreateHeightfield(
+			&context, reference, width, height, boundsMin, boundsMax, 1.0f, 1.0f));
+		REQUIRE(rcCreateHeightfield(
+			&context, optimized, width, height, boundsMin, boundsMax, 1.0f, 1.0f));
+
+		std::uint32_t random = seed * 7919u;
+		for (int z = 0; z < height; ++z)
+		{
+			for (int x = 0; x < width; ++x)
+			{
+				unsigned short spanMin = (unsigned short)(nextRandom(random) % 4);
+				const int spanCount = 1 + (int)(nextRandom(random) % 8);
+				for (int spanIndex = 0; spanIndex < spanCount; ++spanIndex)
+				{
+					const unsigned short spanMax
+						= (unsigned short)(spanMin + 1 + nextRandom(random) % 3);
+					const unsigned char area
+						= nextRandom(random) % 5 == 0 ? RC_NULL_AREA : (unsigned char)1;
+					REQUIRE(rcAddSpan(&context, reference, x, z, spanMin, spanMax, area, 0));
+					REQUIRE(rcAddSpan(&context, optimized, x, z, spanMin, spanMax, area, 0));
+					spanMin = (unsigned short)(spanMax + 1 + nextRandom(random) % 6);
+				}
+			}
+		}
+
+		const int walkableHeight = 2 + (int)(seed % 5);
+		const int walkableClimb = 1 + (int)(seed % 4);
+		filterLedgeSpansReference(walkableHeight, walkableClimb, reference);
+		rcFilterLedgeSpans(&context, walkableHeight, walkableClimb, optimized);
+		CHECK_THAT(getSpans(optimized), Catch::Matchers::Equals(getSpans(reference)));
 	}
 }
 
