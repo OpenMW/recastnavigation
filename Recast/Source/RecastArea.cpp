@@ -72,13 +72,24 @@ static bool pointInPoly(int numVerts, const float* verts, const float* point)
 	return inPoly;
 }
 
+static void updateDistanceToBoundary(
+	unsigned char* distanceToBoundary, const int spanIndex, const int neighborSpanIndex, const int distance)
+{
+	if (neighborSpanIndex < 0)
+	{
+		return;
+	}
+	const unsigned char newDistance
+		= (unsigned char)rcMin((int)distanceToBoundary[neighborSpanIndex] + distance, 255);
+	if (newDistance < distanceToBoundary[spanIndex])
+	{
+		distanceToBoundary[spanIndex] = newDistance;
+	}
+}
+
 bool rcErodeWalkableArea(rcContext* context, const int erosionRadius, rcCompactHeightfield& compactHeightfield)
 {
 	rcAssert(context != NULL);
-
-	const int xSize = compactHeightfield.width;
-	const int zSize = compactHeightfield.height;
-	const int& zStride = xSize; // For readability
 
 	rcScopedTimer timer(context, RC_TIMER_ERODE_AREA);
 
@@ -92,183 +103,60 @@ bool rcErodeWalkableArea(rcContext* context, const int erosionRadius, rcCompactH
 	memset(distanceToBoundary, 0xff, sizeof(unsigned char) * compactHeightfield.spanCount);
 	
 	// Mark boundary cells.
-	for (int z = 0; z < zSize; ++z)
+	for (int spanIndex = 0; spanIndex < compactHeightfield.spanCount; ++spanIndex)
 	{
-		for (int x = 0; x < xSize; ++x)
+		if (compactHeightfield.areas[spanIndex] == RC_NULL_AREA)
 		{
-			const rcCompactCell& cell = compactHeightfield.cells[x + z * zStride];
-			for (int spanIndex = (int)cell.index, maxSpanIndex = (int)(cell.index + cell.count); spanIndex < maxSpanIndex; ++spanIndex)
-			{
-				if (compactHeightfield.areas[spanIndex] == RC_NULL_AREA)
-				{
-					distanceToBoundary[spanIndex] = 0;
-					continue;
-				}
-				const rcCompactSpan& span = compactHeightfield.spans[spanIndex];
+			distanceToBoundary[spanIndex] = 0;
+			continue;
+		}
 
-				// Check that there is a non-null adjacent span in each of the 4 cardinal directions.
-				int neighborCount = 0;
-				for (int direction = 0; direction < 4; ++direction)
-				{
-					const int neighborConnection = rcGetCon(span, direction);
-					if (neighborConnection == RC_NOT_CONNECTED)
-					{
-						break;
-					}
-					
-					const int neighborX = x + rcGetDirOffsetX(direction);
-					const int neighborZ = z + rcGetDirOffsetY(direction);
-					const int neighborSpanIndex = (int)compactHeightfield.cells[neighborX + neighborZ * zStride].index + neighborConnection;
-					
-					if (compactHeightfield.areas[neighborSpanIndex] == RC_NULL_AREA)
-					{
-						break;
-					}
-					neighborCount++;
-				}
-				
-				// At least one missing neighbour, so this is a boundary cell.
-				if (neighborCount != 4)
-				{
-					distanceToBoundary[spanIndex] = 0;
-				}
+		for (int direction = 0; direction < 4; ++direction)
+		{
+			const int neighborSpanIndex = compactHeightfield.neighbors[spanIndex * 4 + direction];
+			if (neighborSpanIndex < 0 || compactHeightfield.areas[neighborSpanIndex] == RC_NULL_AREA)
+			{
+				distanceToBoundary[spanIndex] = 0;
+				break;
 			}
 		}
 	}
 	
-	unsigned char newDistance;
-	
 	// Pass 1
-	for (int z = 0; z < zSize; ++z)
+	for (int spanIndex = 0; spanIndex < compactHeightfield.spanCount; ++spanIndex)
 	{
-		for (int x = 0; x < xSize; ++x)
+		const int west = compactHeightfield.neighbors[spanIndex * 4];
+		updateDistanceToBoundary(distanceToBoundary, spanIndex, west, 2);
+		if (west >= 0)
 		{
-			const rcCompactCell& cell = compactHeightfield.cells[x + z * zStride];
-			const int maxSpanIndex = (int)(cell.index + cell.count);
-			for (int spanIndex = (int)cell.index; spanIndex < maxSpanIndex; ++spanIndex)
-			{
-				const rcCompactSpan& span = compactHeightfield.spans[spanIndex];
-
-				if (rcGetCon(span, 0) != RC_NOT_CONNECTED)
-				{
-					// (-1,0)
-					const int aX = x + rcGetDirOffsetX(0);
-					const int aY = z + rcGetDirOffsetY(0);
-					const int aIndex = (int)compactHeightfield.cells[aX + aY * xSize].index + rcGetCon(span, 0);
-					const rcCompactSpan& aSpan = compactHeightfield.spans[aIndex];
-					newDistance = (unsigned char)rcMin((int)distanceToBoundary[aIndex] + 2, 255);
-					if (newDistance < distanceToBoundary[spanIndex])
-					{
-						distanceToBoundary[spanIndex] = newDistance;
-					}
-
-					// (-1,-1)
-					if (rcGetCon(aSpan, 3) != RC_NOT_CONNECTED)
-					{
-						const int bX = aX + rcGetDirOffsetX(3);
-						const int bY = aY + rcGetDirOffsetY(3);
-						const int bIndex = (int)compactHeightfield.cells[bX + bY * xSize].index + rcGetCon(aSpan, 3);
-						newDistance = (unsigned char)rcMin((int)distanceToBoundary[bIndex] + 3, 255);
-						if (newDistance < distanceToBoundary[spanIndex])
-						{
-							distanceToBoundary[spanIndex] = newDistance;
-						}
-					}
-				}
-				if (rcGetCon(span, 3) != RC_NOT_CONNECTED)
-				{
-					// (0,-1)
-					const int aX = x + rcGetDirOffsetX(3);
-					const int aY = z + rcGetDirOffsetY(3);
-					const int aIndex = (int)compactHeightfield.cells[aX + aY * xSize].index + rcGetCon(span, 3);
-					const rcCompactSpan& aSpan = compactHeightfield.spans[aIndex];
-					newDistance = (unsigned char)rcMin((int)distanceToBoundary[aIndex] + 2, 255);
-					if (newDistance < distanceToBoundary[spanIndex])
-					{
-						distanceToBoundary[spanIndex] = newDistance;
-					}
-
-					// (1,-1)
-					if (rcGetCon(aSpan, 2) != RC_NOT_CONNECTED)
-					{
-						const int bX = aX + rcGetDirOffsetX(2);
-						const int bY = aY + rcGetDirOffsetY(2);
-						const int bIndex = (int)compactHeightfield.cells[bX + bY * xSize].index + rcGetCon(aSpan, 2);
-						newDistance = (unsigned char)rcMin((int)distanceToBoundary[bIndex] + 3, 255);
-						if (newDistance < distanceToBoundary[spanIndex])
-						{
-							distanceToBoundary[spanIndex] = newDistance;
-						}
-					}
-				}
-			}
+			updateDistanceToBoundary(
+				distanceToBoundary, spanIndex, compactHeightfield.neighbors[west * 4 + 3], 3);
+		}
+		const int north = compactHeightfield.neighbors[spanIndex * 4 + 3];
+		updateDistanceToBoundary(distanceToBoundary, spanIndex, north, 2);
+		if (north >= 0)
+		{
+			updateDistanceToBoundary(
+				distanceToBoundary, spanIndex, compactHeightfield.neighbors[north * 4 + 2], 3);
 		}
 	}
 
 	// Pass 2
-	for (int z = zSize - 1; z >= 0; --z)
+	for (int spanIndex = compactHeightfield.spanCount - 1; spanIndex >= 0; --spanIndex)
 	{
-		for (int x = xSize - 1; x >= 0; --x)
+		const int east = compactHeightfield.neighbors[spanIndex * 4 + 2];
+		updateDistanceToBoundary(distanceToBoundary, spanIndex, east, 2);
+		if (east >= 0)
 		{
-			const rcCompactCell& cell = compactHeightfield.cells[x + z * zStride];
-			const int maxSpanIndex = (int)(cell.index + cell.count);
-			for (int spanIndex = (int)cell.index; spanIndex < maxSpanIndex; ++spanIndex)
-			{
-				const rcCompactSpan& span = compactHeightfield.spans[spanIndex];
-
-				if (rcGetCon(span, 2) != RC_NOT_CONNECTED)
-				{
-					// (1,0)
-					const int aX = x + rcGetDirOffsetX(2);
-					const int aY = z + rcGetDirOffsetY(2);
-					const int aIndex = (int)compactHeightfield.cells[aX + aY * xSize].index + rcGetCon(span, 2);
-					const rcCompactSpan& aSpan = compactHeightfield.spans[aIndex];
-					newDistance = (unsigned char)rcMin((int)distanceToBoundary[aIndex] + 2, 255);
-					if (newDistance < distanceToBoundary[spanIndex])
-					{
-						distanceToBoundary[spanIndex] = newDistance;
-					}
-
-					// (1,1)
-					if (rcGetCon(aSpan, 1) != RC_NOT_CONNECTED)
-					{
-						const int bX = aX + rcGetDirOffsetX(1);
-						const int bY = aY + rcGetDirOffsetY(1);
-						const int bIndex = (int)compactHeightfield.cells[bX + bY * xSize].index + rcGetCon(aSpan, 1);
-						newDistance = (unsigned char)rcMin((int)distanceToBoundary[bIndex] + 3, 255);
-						if (newDistance < distanceToBoundary[spanIndex])
-						{
-							distanceToBoundary[spanIndex] = newDistance;
-						}
-					}
-				}
-				if (rcGetCon(span, 1) != RC_NOT_CONNECTED)
-				{
-					// (0,1)
-					const int aX = x + rcGetDirOffsetX(1);
-					const int aY = z + rcGetDirOffsetY(1);
-					const int aIndex = (int)compactHeightfield.cells[aX + aY * xSize].index + rcGetCon(span, 1);
-					const rcCompactSpan& aSpan = compactHeightfield.spans[aIndex];
-					newDistance = (unsigned char)rcMin((int)distanceToBoundary[aIndex] + 2, 255);
-					if (newDistance < distanceToBoundary[spanIndex])
-					{
-						distanceToBoundary[spanIndex] = newDistance;
-					}
-
-					// (-1,1)
-					if (rcGetCon(aSpan, 0) != RC_NOT_CONNECTED)
-					{
-						const int bX = aX + rcGetDirOffsetX(0);
-						const int bY = aY + rcGetDirOffsetY(0);
-						const int bIndex = (int)compactHeightfield.cells[bX + bY * xSize].index + rcGetCon(aSpan, 0);
-						newDistance = (unsigned char)rcMin((int)distanceToBoundary[bIndex] + 3, 255);
-						if (newDistance < distanceToBoundary[spanIndex])
-						{
-							distanceToBoundary[spanIndex] = newDistance;
-						}
-					}
-				}
-			}
+			updateDistanceToBoundary(
+				distanceToBoundary, spanIndex, compactHeightfield.neighbors[east * 4 + 1], 3);
+		}
+		const int south = compactHeightfield.neighbors[spanIndex * 4 + 1];
+		updateDistanceToBoundary(distanceToBoundary, spanIndex, south, 2);
+		if (south >= 0)
+		{
+			updateDistanceToBoundary(
+				distanceToBoundary, spanIndex, compactHeightfield.neighbors[south * 4], 3);
 		}
 	}
 

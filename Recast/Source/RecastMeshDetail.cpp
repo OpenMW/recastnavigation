@@ -92,29 +92,55 @@ static bool circumCircle(const float* p1, const float* p2, const float* p3,
 	return false;
 }
 
-static float distPtTri(const float* p, const float* a, const float* b, const float* c)
+struct DetailTriangle
 {
-	float v0[3], v1[3], v2[3];
-	rcVsub(v0, c,a);
-	rcVsub(v1, b,a);
-	rcVsub(v2, p,a);
-	
-	const float dot00 = vdot2(v0, v0);
-	const float dot01 = vdot2(v0, v1);
-	const float dot02 = vdot2(v0, v2);
-	const float dot11 = vdot2(v1, v1);
-	const float dot12 = vdot2(v1, v2);
-	
+	float origin[3];
+	float edge0[3];
+	float edge1[3];
+	float dot00;
+	float dot01;
+	float dot11;
+	float inverseDenominator;
+};
+
+static void cacheDetailTriangles(const float* verts, const int* tris, const int triangleCount,
+	rcTempVector<DetailTriangle>& triangleCache)
+{
+	triangleCache.resize(triangleCount);
+	for (int i = 0; i < triangleCount; ++i)
+	{
+		const float* a = &verts[tris[i * 4] * 3];
+		const float* b = &verts[tris[i * 4 + 1] * 3];
+		const float* c = &verts[tris[i * 4 + 2] * 3];
+		DetailTriangle& triangle = triangleCache[i];
+		rcVcopy(triangle.origin, a);
+		rcVsub(triangle.edge0, c, a);
+		rcVsub(triangle.edge1, b, a);
+		triangle.dot00 = vdot2(triangle.edge0, triangle.edge0);
+		triangle.dot01 = vdot2(triangle.edge0, triangle.edge1);
+		triangle.dot11 = vdot2(triangle.edge1, triangle.edge1);
+		triangle.inverseDenominator
+			= 1.0f / (triangle.dot00 * triangle.dot11 - triangle.dot01 * triangle.dot01);
+	}
+}
+
+static float distPtTri(const float* p, const DetailTriangle& triangle)
+{
+	float v2[3];
+	rcVsub(v2, p, triangle.origin);
+
+	const float dot02 = vdot2(triangle.edge0, v2);
+	const float dot12 = vdot2(triangle.edge1, v2);
+
 	// Compute barycentric coordinates
-	const float invDenom = 1.0f / (dot00 * dot11 - dot01 * dot01);
-	const float u = (dot11 * dot02 - dot01 * dot12) * invDenom;
-	float v = (dot00 * dot12 - dot01 * dot02) * invDenom;
+	const float u = (triangle.dot11 * dot02 - triangle.dot01 * dot12) * triangle.inverseDenominator;
+	float v = (triangle.dot00 * dot12 - triangle.dot01 * dot02) * triangle.inverseDenominator;
 	
 	// If point lies inside the triangle, return interpolated y-coord.
 	static const float EPS = 1e-4f;
 	if (u >= -EPS && v >= -EPS && (u+v) <= 1+EPS)
 	{
-		const float y = a[1] + v0[1]*u + v1[1]*v;
+		const float y = triangle.origin[1] + triangle.edge0[1]*u + triangle.edge1[1]*v;
 		return fabsf(y-p[1]);
 	}
 	return FLT_MAX;
@@ -165,15 +191,12 @@ static float distancePtSeg2d(const float* pt, const float* p, const float* q)
 	return dx*dx + dz*dz;
 }
 
-static float distToTriMesh(const float* p, const float* verts, const int /*nverts*/, const int* tris, const int ntris)
+static float distToTriMesh(const float* p, const rcTempVector<DetailTriangle>& triangles)
 {
 	float dmin = FLT_MAX;
-	for (int i = 0; i < ntris; ++i)
+	for (int i = 0; i < triangles.size(); ++i)
 	{
-		const float* va = &verts[tris[i*4+0]*3];
-		const float* vb = &verts[tris[i*4+1]*3];
-		const float* vc = &verts[tris[i*4+2]*3];
-		float d = distPtTri(p, va,vb,vc);
+		float d = distPtTri(p, triangles[i]);
 		if (d < dmin)
 			dmin = d;
 	}
@@ -672,7 +695,8 @@ static bool buildPolyDetail(rcContext* ctx, const float* in, const int nin,
 							const float sampleDist, const float sampleMaxError,
 							const int heightSearchRadius, const rcCompactHeightfield& chf,
 							const rcHeightPatch& hp, float* verts, int& nverts,
-							rcTempVector<int>& tris, rcTempVector<int>& edges, rcTempVector<int>& samples)
+							rcTempVector<int>& tris, rcTempVector<int>& edges, rcTempVector<int>& samples,
+							rcTempVector<DetailTriangle>& triangleCache)
 {
 	static const int MAX_VERTS = 127;
 	static const int MAX_TRIS = 255;	// Max tris for delaunay is 2n-2-k (n=num verts, k=num hull verts).
@@ -863,7 +887,8 @@ static bool buildPolyDetail(rcContext* ctx, const float* in, const int nin,
 		{
 			if (nverts >= MAX_VERTS)
 				break;
-			
+			cacheDetailTriangles(verts, tris.data(), static_cast<int>(tris.size()) / 4, triangleCache);
+
 			// Find sample with most error.
 			float bestpt[3] = {0,0,0};
 			float bestd = 0;
@@ -878,7 +903,7 @@ static bool buildPolyDetail(rcContext* ctx, const float* in, const int nin,
 				pt[0] = s[0]*sampleDist + getJitterX(i)*cs*0.1f;
 				pt[1] = s[1]*chf.ch;
 				pt[2] = s[2]*sampleDist + getJitterY(i)*cs*0.1f;
-				float d = distToTriMesh(pt, verts, nverts, &tris[0], static_cast<int>(tris.size()) / 4);
+				float d = distToTriMesh(pt, triangleCache);
 				if (d < 0) continue; // did not hit the mesh.
 				if (d > bestd)
 				{
@@ -1010,11 +1035,11 @@ static void seedArrayWithPolyCenter(rcContext* ctx, const rcCompactHeightfield& 
 		// Push the direct dir last so we start with this on next iteration
 		rcSwap(dirs[directDir], dirs[3]);
 
-		const rcCompactSpan& cs = chf.spans[ci];
 		for (int i = 0; i < 4; i++)
 		{
 			int dir = dirs[i];
-			if (rcGetCon(cs, dir) == RC_NOT_CONNECTED)
+			const int neighborSpanIndex = chf.neighbors[ci * 4 + dir];
+			if (neighborSpanIndex < 0)
 				continue;
 
 			int newX = cx + rcGetDirOffsetX(dir);
@@ -1031,7 +1056,7 @@ static void seedArrayWithPolyCenter(rcContext* ctx, const rcCompactHeightfield& 
 			hp.data[hpx+hpy*hp.width] = 1;
 			array.push_back(newX);
 			array.push_back(newY);
-			array.push_back((int)chf.cells[(newX+bs)+(newY+bs)*chf.width].index + rcGetCon(cs, dir));
+			array.push_back(neighborSpanIndex);
 		}
 
 		rcSwap(dirs[directDir], dirs[3]);
@@ -1100,11 +1125,9 @@ static void getHeightData(rcContext* ctx, const rcCompactHeightfield& chf,
 						bool border = false;
 						for (int dir = 0; dir < 4; ++dir)
 						{
-							if (rcGetCon(s, dir) != RC_NOT_CONNECTED)
+							const int ai = chf.neighbors[i * 4 + dir];
+							if (ai >= 0)
 							{
-								const int ax = x + rcGetDirOffsetX(dir);
-								const int ay = y + rcGetDirOffsetY(dir);
-								const int ai = (int)chf.cells[ax + ay*chf.width].index + rcGetCon(s, dir);
 								const rcCompactSpan& as = chf.spans[ai];
 								if (as.reg != region)
 								{
@@ -1148,10 +1171,10 @@ static void getHeightData(rcContext* ctx, const rcCompactHeightfield& chf,
 			queue.resize(queue.size()-RETRACT_SIZE*3);
 		}
 		
-		const rcCompactSpan& cs = chf.spans[ci];
 		for (int dir = 0; dir < 4; ++dir)
 		{
-			if (rcGetCon(cs, dir) == RC_NOT_CONNECTED) continue;
+			const int ai = chf.neighbors[ci * 4 + dir];
+			if (ai < 0) continue;
 			
 			const int ax = cx + rcGetDirOffsetX(dir);
 			const int ay = cy + rcGetDirOffsetY(dir);
@@ -1164,7 +1187,6 @@ static void getHeightData(rcContext* ctx, const rcCompactHeightfield& chf,
 			if (hp.data[hx + hy*hp.width] != RC_UNSET_HEIGHT)
 				continue;
 			
-			const int ai = (int)chf.cells[ax + ay*chf.width].index + rcGetCon(cs, dir);
 			const rcCompactSpan& as = chf.spans[ai];
 			
 			hp.data[hx + hy*hp.width] = as.y;
@@ -1201,6 +1223,7 @@ bool rcBuildPolyMeshDetail(rcContext* ctx, const rcPolyMesh& mesh, const rcCompa
 	rcTempVector<int> tris(512);
 	rcTempVector<int> arr(512);
 	rcTempVector<int> samples(512);
+	rcTempVector<DetailTriangle> triangleCache;
 	float verts[256*3];
 	rcHeightPatch hp;
 	int nPolyVerts = 0;
@@ -1314,7 +1337,7 @@ bool rcBuildPolyMeshDetail(rcContext* ctx, const rcPolyMesh& mesh, const rcCompa
 							 sampleDist, sampleMaxError,
 							 heightSearchRadius, chf, hp,
 							 verts, nverts, tris,
-							 edges, samples))
+							 edges, samples, triangleCache))
 		{
 			return false;
 		}

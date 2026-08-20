@@ -369,6 +369,7 @@ struct rcCompactHeightfield
 	float ch;					///< The height of each cell. (The minimum increment along the y-axis.)
 	rcCompactCell* cells;		///< Array of cells. [Size: #width*#height]
 	rcCompactSpan* spans;		///< Array of spans. [Size: #spanCount]
+	int* neighbors;				///< Absolute span indices for four cardinal neighbors. [Size: #spanCount*4]
 	unsigned short* dist;		///< Array containing border distance data. [Size: #spanCount]
 	unsigned char* areas;		///< Array containing area id data. [Size: #spanCount]
 	
